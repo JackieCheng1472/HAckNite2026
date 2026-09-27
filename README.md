@@ -14,7 +14,7 @@ Suggestions remain drafts until approved. Sample “Messages”, Contacts, campu
 
 ## Calendar tools
 
-The calendar displays the full day. Events longer than midnight continue into the next date, and custom durations can be set up to 168 hours. Use the calendar search box to filter by event name, notes, or source. Star an event to mark it special; **Show special** hides or reveals all starred entries, and the × control removes an event.
+The calendar displays the full day. Events longer than midnight continue into the next date, and custom durations can be set up to 168 hours. Event categories choose a default priority (deadlines urgent, appointments high, regular events/classes normal, focus/special items low); each event’s priority can be changed in its form. When events overlap, only the highest-priority ones appear in those time segments. Search for a hidden event by name to bring it into view. Drag an event’s bottom grip to resize it in 15-minute steps, or focus the grip and use the arrow keys. Use the calendar search box to filter by event name, notes, or source. Star an event to mark it special; **Show special** hides or reveals all starred entries, and the × control removes an event.
 
 **Scan syllabus** accepts text, Markdown, CSV, searchable PDF, and DOCX. It extracts likely dated classes, deadlines, exams, and office hours into an editable review list before saving them. Scanned-image PDFs and arbitrary schedules may not be recognized reliably, so review every suggested title, date, and time. PDF/DOCX reading loads document parsers from a CDN; extracted document contents are handled in the browser and are not uploaded.
 

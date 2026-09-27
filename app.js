@@ -47,6 +47,7 @@
   let showSpecialEvents = true;
   let syllabusCandidates = [];
   let syllabusFileName = '';
+  let activeResize = null;
   let toastTimer;
 
   function toast(message) { const node = $('#toast'); node.textContent = message; node.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => node.classList.remove('show'), 2800); }
@@ -69,6 +70,13 @@
     }
     return true;
   }
+  const kindPriority = { deadline: 'urgent', appointment: 'high', birthday: 'high', family: 'high', holiday: 'high', event: 'normal', class: 'normal', food: 'normal', focus: 'low' };
+  const priorityRank = { low: 1, normal: 2, high: 3, urgent: 4 };
+  function defaultPriorityForKind(kind, special = false) { return special ? 'low' : (kindPriority[kind] || 'normal'); }
+  function eventPriority(item) {
+    const priority = priorityRank[item.priority] ? item.priority : defaultPriorityForKind(item.kind || 'event', item.special);
+    return priorityRank[priority];
+  }
   function renderSuggestions() {
     const visibleSuggestions = suggestions.filter(isSuggestionVisible);
     $('#suggestion-count').textContent = visibleSuggestions.length;
@@ -79,6 +87,11 @@
   function renderCalendar() {
     const calendar = $('#calendar-view');
     if ($('#calendar-tools').parentElement !== calendar) calendar.insertBefore($('#calendar-tools'), $('#week-calendar'));
+    if (!$('#calendar-priority-help')) {
+      const help = document.createElement('small'); help.id = 'calendar-priority-help'; help.className = 'calendar-priority-help';
+      help.textContent = 'Overlaps show the highest priority. Drag an event’s bottom edge to resize it.';
+      $('#calendar-tools').append(help);
+    }
     const days = Array.from({ length: 7 }, (_, index) => { const d = new Date(currentWeek); d.setDate(d.getDate() + index); return d; });
     const first = days[0]; const last = days[6];
     $('#week-label').textContent = first.getMonth() === last.getMonth() ? first.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : `${first.toLocaleDateString('en-US', { month: 'short' })} – ${last.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`;
@@ -111,8 +124,22 @@
         const visibleEnd = new Date(dayStart); visibleEnd.setHours(endHour, 0, 0, 0);
         return { ...item, starts, ends, segmentStart: Math.max(starts.getTime(), visibleStart.getTime()), segmentEnd: Math.min(ends.getTime(), visibleEnd.getTime()) };
       }).filter(item => item.segmentEnd > item.segmentStart).sort((a, b) => a.segmentStart - b.segmentStart);
+      const cutPoints = [...new Set(timedEvents.flatMap(item => [item.segmentStart, item.segmentEnd]))].sort((a, b) => a - b);
+      const priorityFragments = [];
+      for (let point = 0; point < cutPoints.length - 1; point += 1) {
+        const segmentStart = cutPoints[point]; const segmentEnd = cutPoints[point + 1];
+        const active = timedEvents.filter(item => item.segmentStart < segmentEnd && item.segmentEnd > segmentStart);
+        if (!active.length) continue;
+        const highest = Math.max(...active.map(eventPriority));
+        for (const item of active.filter(entry => eventPriority(entry) === highest)) {
+          const previous = priorityFragments.find(fragment => String(fragment.id) === String(item.id) && fragment.segmentEnd === segmentStart);
+          if (previous) previous.segmentEnd = segmentEnd;
+          else priorityFragments.push({ ...item, segmentStart, segmentEnd });
+        }
+      }
+      priorityFragments.sort((a, b) => a.segmentStart - b.segmentStart);
       const lanes = [];
-      const cards = timedEvents.map(item => {
+      const cards = priorityFragments.map(item => {
         let lane = lanes.findIndex(end => end <= item.segmentStart);
         if (lane < 0) lane = lanes.length;
         lanes[lane] = item.segmentEnd;
@@ -125,12 +152,21 @@
         const continued = item.starts.getTime() < dayStart.getTime();
         const segmentDate = new Date(item.segmentStart);
         const segmentClock = `${String(segmentDate.getHours()).padStart(2, '0')}:${String(segmentDate.getMinutes()).padStart(2, '0')}`;
-        const controls = item.isDraft ? '' : `<span class="calendar-event-controls"><button type="button" data-toggle-special="${item.id}" aria-label="${item.special ? 'Remove special marking' : 'Mark as special'}">${item.special ? '★' : '☆'}</button><button type="button" data-delete-event="${item.id}" aria-label="Remove ${escapeHtml(item.title)}">×</button></span>`;
-        return `<div class="calendar-event kind-${kind} ${item.isDraft ? 'calendar-draft' : ''} ${item.special ? 'special-event' : ''} ${favorite ? 'favorite-event' : ''}" style="top:${top}px;height:${height}px;left:${left}%;width:${width}%" ${item.isDraft ? `data-review-suggestion="${item.id}"` : ''}><strong>${escapeHtml(item.title)}</strong><span>${item.isDraft ? 'Draft · ' : ''}${continued ? 'Continues · ' : ''}${formatTime(continued ? segmentClock : item.time)}${item.source ? ` · ${escapeHtml(item.source)}` : ''}</span>${controls}</div>`;
+        const priorityName = Object.keys(priorityRank).find(name => priorityRank[name] === eventPriority(item));
+        const eventSource = item.source || (item.isDraft ? 'Suggestion' : 'Personal calendar');
+        const detailData = `data-event-details data-event-id="${escapeHtml(item.id)}" data-event-title="${escapeHtml(item.title)}" data-event-date="${item.date}" data-event-time="${item.time || '00:00'}" data-event-duration="${Number(item.duration) || 60}" data-event-kind="${escapeHtml(kind)}" data-event-priority="${priorityName}" data-event-source="${escapeHtml(eventSource)}" data-event-notes="${escapeHtml(item.notes || item.detail || '')}" data-event-special="${item.special ? 'true' : 'false'}" data-event-draft="${item.isDraft ? 'true' : 'false'}"`;
+        const controls = item.isDraft ? '' : `<span class="calendar-event-controls"><button type="button" data-toggle-special="${item.id}" aria-label="${item.special ? 'Remove special marking' : 'Mark as special'}">${item.special ? '★' : '☆'}</button><button type="button" data-delete-event="${item.id}" aria-label="Remove ${escapeHtml(item.title)}">×</button></span><button type="button" class="resize-grip" data-resize-event="${item.id}" aria-label="Drag to change duration for ${escapeHtml(item.title)}" title="Drag to change duration"></button>`;
+        return `<div class="calendar-event priority-${priorityName} kind-${kind} ${item.isDraft ? 'calendar-draft' : ''} ${item.special ? 'special-event' : ''} ${favorite ? 'favorite-event' : ''}" style="top:${top}px;height:${height}px;left:${left}%;width:${width}%" ${detailData} ${item.isDraft ? `data-review-suggestion="${item.id}"` : ''} title="${priorityName[0].toUpperCase()}${priorityName.slice(1)} priority"><strong>${escapeHtml(item.title)}</strong><span>${item.isDraft ? 'Draft · ' : ''}${continued ? 'Continues · ' : ''}${formatTime(continued ? segmentClock : item.time)}${item.source ? ` · ${escapeHtml(item.source)}` : ''}</span>${controls}</div>`;
       }).join('');
       return `<div class="day-column"><div class="day-head ${isToday ? 'is-today' : ''}">${day.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase()}<strong>${day.getDate()}</strong></div><div class="all-day-row">${allDay}</div><div class="day-body" style="height:${hours.length * hourHeight}px">${cards}</div></div>`;
     }).join('');
     $('#week-calendar').innerHTML = headers + columns;
+  }
+  function updateEventDuration(id, duration) {
+    const item = events.find(entry => String(entry.id) === String(id));
+    if (!item) return;
+    item.duration = Math.max(15, Math.min(7 * 24 * 60, Math.round(duration / 15) * 15));
+    store.write('events', events); renderAgenda(); renderCalendar();
   }
   function renderReminders() {
     const open = reminders.filter(item => !item.done).length;
@@ -167,8 +203,8 @@
     $('#custom-duration-hours').required = custom;
     if (!custom) $('#custom-duration-hours').value = '';
   }
-  function createEvent(title, date, time, duration = 60, source = 'Personal', color = 'green', notes = '', kind = 'event', allDay = false) {
-    events.push({ id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()), title, date, time, duration: Number(duration), source, color, notes, kind, allDay });
+  function createEvent(title, date, time, duration = 60, source = 'Personal', color = 'green', notes = '', kind = 'event', allDay = false, priority = null) {
+    events.push({ id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()), title, date, time, duration: Number(duration), source, color, notes, kind, allDay, priority: priority || defaultPriorityForKind(kind) });
     saveEvents();
   }
   function handlePlanner() {
@@ -191,7 +227,7 @@
   }
   function approveSuggestion(id) {
     const suggestion = suggestions.find(item => item.id === id); if (!suggestion) return;
-    createEvent(suggestion.title, suggestion.date, suggestion.time, suggestion.duration, suggestion.source, 'green', suggestion.detail, suggestion.kind || 'event', Boolean(suggestion.allDay));
+    createEvent(suggestion.title, suggestion.date, suggestion.time, suggestion.duration, suggestion.source, 'green', suggestion.detail, suggestion.kind || 'event', Boolean(suggestion.allDay), suggestion.priority || null);
     suggestions = suggestions.filter(item => item.id !== id); store.write('suggestions', suggestions); renderSuggestions(); toast(`“${suggestion.title}” added to your calendar.`);
   }
   let pdfLibraryPromise;
@@ -345,6 +381,39 @@
       const filter = event.target.closest('[data-filter]'); if (filter) { reminderFilter = filter.dataset.filter; $$('.reminder-tab').forEach(tab => tab.classList.toggle('selected', tab === filter)); renderReminders(); return; }
       const hint = event.target.closest('[data-prompt]'); if (hint) { $('#planner-input').value = hint.dataset.prompt; handlePlanner(); return; }
     });
+    document.addEventListener('pointerdown', event => {
+      const grip = event.target.closest('[data-resize-event]');
+      if (!grip || event.button !== 0) return;
+      const item = events.find(entry => String(entry.id) === grip.dataset.resizeEvent);
+      const card = grip.closest('.calendar-event');
+      if (!item || !card) return;
+      activeResize = { id: item.id, startY: event.screenY, startDuration: Number(item.duration) || 60, initialHeight: card.getBoundingClientRect().height, card, delta: 0 };
+      event.preventDefault();
+      grip.setPointerCapture?.(event.pointerId);
+    });
+    document.addEventListener('pointermove', event => {
+      if (!activeResize) return;
+      activeResize.delta = Math.round((event.screenY - activeResize.startY) / 15) * 15;
+      const body = activeResize.card.closest('.day-body');
+      const maxHeight = body ? body.clientHeight - activeResize.card.offsetTop : 1440;
+      activeResize.card.style.height = `${Math.max(23, Math.min(maxHeight, activeResize.initialHeight + activeResize.delta))}px`;
+    });
+    const finishResize = () => {
+      if (!activeResize) return;
+      const { id, startDuration, delta } = activeResize;
+      activeResize = null;
+      if (delta) { updateEventDuration(id, startDuration + delta); toast('Event duration updated in 15-minute increments.'); }
+      else renderCalendar();
+    };
+    document.addEventListener('pointerup', finishResize);
+    document.addEventListener('pointercancel', finishResize);
+    document.addEventListener('keydown', event => {
+      const grip = event.target.closest('[data-resize-event]');
+      if (!grip || !['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+      event.preventDefault();
+      const item = events.find(entry => String(entry.id) === grip.dataset.resizeEvent);
+      if (item) { updateEventDuration(item.id, (Number(item.duration) || 60) + (event.key === 'ArrowDown' ? 15 : -15)); toast('Event duration updated by 15 minutes.'); }
+    });
     $('#planner-submit').addEventListener('click', handlePlanner);
     $('#planner-input').addEventListener('keydown', event => { if (event.key === 'Enter') handlePlanner(); });
     $('#calendar-search').addEventListener('input', event => { calendarSearch = event.currentTarget.value; renderCalendar(); });
@@ -369,12 +438,14 @@
     $('#new-event-button').addEventListener('click', () => openEventDialog());
     $('#calendar-new-event').addEventListener('click', () => openEventDialog());
     $('#event-duration').addEventListener('change', syncCustomDuration);
+    $('#event-kind').addEventListener('change', event => { $('#event-priority').value = defaultPriorityForKind(event.currentTarget.value); });
     $('#event-form').addEventListener('submit', event => {
       event.preventDefault();
       if (event.submitter?.value === 'cancel') { $('#event-dialog').close(); return; }
       const form = new FormData(event.currentTarget);
       const duration = form.get('duration') === 'custom' ? Number(form.get('customDurationHours')) * 60 : Number(form.get('duration'));
-      createEvent(form.get('title').trim(), form.get('date'), form.get('time'), duration, 'Personal', 'green', form.get('notes').trim(), form.get('kind') || 'event');
+      const kind = form.get('kind') || 'event';
+      createEvent(form.get('title').trim(), form.get('date'), form.get('time'), duration, 'Personal', 'green', form.get('notes').trim(), kind, false, form.get('priority'));
       $('#event-dialog').close(); toast('Your event is on the calendar.');
     });
     $('#text-import-form').addEventListener('submit', event => {
