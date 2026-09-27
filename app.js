@@ -168,6 +168,23 @@
     item.duration = Math.max(15, Math.min(7 * 24 * 60, Math.round(duration / 15) * 15));
     store.write('events', events); renderAgenda(); renderCalendar();
   }
+  function openEventDetails(card) {
+    const data = card.dataset;
+    const date = parseDate(data.eventDate);
+    const dateLabel = date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+    $('#event-details-title').textContent = data.eventTitle;
+    $('#event-details-when').textContent = data.eventTime === '00:00' && data.eventDuration === '60' && data.eventKind === 'birthday' ? `${dateLabel} · All day` : `${dateLabel} · ${formatTime(data.eventTime)}`;
+    $('#event-details-duration').textContent = data.eventTime === '00:00' && data.eventKind === 'birthday' ? 'All day' : `${data.eventDuration} minutes`;
+    $('#event-details-kind').textContent = data.eventKind.replace(/\b\w/g, letter => letter.toUpperCase());
+    $('#event-details-priority').textContent = data.eventPriority.replace(/\b\w/g, letter => letter.toUpperCase());
+    $('#event-details-source').textContent = data.eventSource;
+    $('#event-details-notes').textContent = data.eventNotes || 'No description or notes.';
+    $('#event-details-notes-row').hidden = false;
+    const deleteButton = $('#event-details-delete');
+    deleteButton.hidden = data.eventDraft === 'true';
+    deleteButton.dataset.eventId = data.eventId;
+    $('#event-details-dialog').showModal();
+  }
   function renderReminders() {
     const open = reminders.filter(item => !item.done).length;
     $('#all-reminder-count').textContent = reminders.length;
@@ -351,6 +368,8 @@
   function closeSyllabusDialog() { $('#syllabus-dialog').close(); $('#syllabus-file').value = ''; }
   function bindEvents() {
     document.addEventListener('click', event => {
+      const detailsCard = event.target.closest('[data-event-details]');
+      if (detailsCard && !event.target.closest('button')) { event.preventDefault(); openEventDetails(detailsCard); return; }
       const nav = event.target.closest('[data-view]'); if (nav) { event.preventDefault(); navigate(nav.dataset.view); return; }
       const viewLink = event.target.closest('[data-view-link]'); if (viewLink) { navigate(viewLink.dataset.viewLink); return; }
       if (event.target.closest('[data-open-settings]')) { $('#settings-dialog').showModal(); return; }
@@ -367,6 +386,12 @@
         store.write('events', events); renderCalendar(); return;
       }
       if (event.target.closest('#close-syllabus-dialog, #cancel-syllabus-import')) { closeSyllabusDialog(); return; }
+      if (event.target.closest('#close-event-details, #event-details-done')) { $('#event-details-dialog').close(); return; }
+      if (event.target.closest('#event-details-delete')) {
+        const id = event.target.closest('#event-details-delete').dataset.eventId;
+        events = events.filter(item => String(item.id) !== id); store.write('events', events);
+        renderAgenda(); renderCalendar(); $('#event-details-dialog').close(); toast('Event removed.'); return;
+      }
       if (event.target.closest('#add-syllabus-events')) {
         const selected = syllabusCandidates.filter(item => item.selected && item.title && item.date);
         for (const item of selected) events.push({ id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`, title: item.title, date: item.date, time: item.time || '09:00', duration: Number(item.duration) || 60, source: `Syllabus · ${syllabusFileName}`, color: item.special ? 'blue' : 'green', notes: item.sourceLine, kind: item.kind || 'class', special: Boolean(item.special) });
@@ -502,6 +527,7 @@
     $('#settings-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
     $('#text-import-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
     $('#syllabus-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) closeSyllabusDialog(); });
+    $('#event-details-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
     $('#reminder-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
   }
   function applyPreferences() {
