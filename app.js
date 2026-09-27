@@ -182,7 +182,9 @@
     $('#new-event-button').addEventListener('click', () => openEventDialog());
     $('#calendar-new-event').addEventListener('click', () => openEventDialog());
     $('#event-form').addEventListener('submit', event => {
-      event.preventDefault(); const form = new FormData(event.currentTarget); createEvent(form.get('title').trim(), form.get('date'), form.get('time'), form.get('duration'), 'Personal', 'green', form.get('notes').trim(), form.get('kind') || 'event');
+      event.preventDefault();
+      if (event.submitter?.value === 'cancel') { $('#event-dialog').close(); return; }
+      const form = new FormData(event.currentTarget); createEvent(form.get('title').trim(), form.get('date'), form.get('time'), form.get('duration'), 'Personal', 'green', form.get('notes').trim(), form.get('kind') || 'event');
       $('#event-dialog').close(); toast('Your event is on the calendar.');
     });
     $('#previous-week').addEventListener('click', () => { currentWeek.setDate(currentWeek.getDate() - 7); renderCalendar(); });
@@ -213,7 +215,10 @@
     });
     $('#add-buffer').addEventListener('click', () => { const now = new Date(); now.setHours(now.getHours() + 1, 0, 0, 0); const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`; createEvent('Breathing room', localDate(new Date()), time, 15, 'Personal', 'green'); toast('A 15-minute buffer was added for later today.'); });
     window.addEventListener('hashchange', () => navigate(location.hash.slice(1)));
-    $('#event-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
+    $('#event-dialog').addEventListener('click', event => {
+      if (event.target.closest('button[value="cancel"]')) { event.preventDefault(); event.currentTarget.close(); return; }
+      if (event.target === event.currentTarget) event.currentTarget.close();
+    });
     $('#settings-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
     $('#reminder-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
   }
