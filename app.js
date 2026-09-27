@@ -40,10 +40,13 @@
   let events = store.read('events', defaultEvents);
   let suggestions = store.read('suggestions', defaultSuggestions);
   let reminders = store.read('reminders', defaultReminders);
-  let connections = store.read('connections', {});
   let preferences = store.read('preferences', { name: 'Carmen', weekStartsOn: 0, food: '', favorites: [], watch: ['food', 'birthday', 'holiday', 'family'] });
   let currentWeek = new Date(); currentWeek.setHours(0, 0, 0, 0); currentWeek.setDate(currentWeek.getDate() - ((currentWeek.getDay() - Number(preferences.weekStartsOn || 0) + 7) % 7));
   let reminderFilter = 'all';
+  let calendarSearch = '';
+  let showSpecialEvents = true;
+  let syllabusCandidates = [];
+  let syllabusFileName = '';
   let toastTimer;
 
   function toast(message) { const node = $('#toast'); node.textContent = message; node.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => node.classList.remove('show'), 2800); }
@@ -74,32 +77,56 @@
     $('#inbox-suggestions').innerHTML = visibleSuggestions.length ? visibleSuggestions.map(suggestion => `<article class="inbox-card"><div class="inbox-card-icon ${suggestion.provider}">${suggestion.provider === 'google' ? '✉' : (suggestion.provider === 'contacts' ? '♡' : '▣')}</div><div class="inbox-card-body"><div class="inbox-card-top"><strong>${escapeHtml(suggestion.title)}</strong><span>${escapeHtml(suggestion.source)}</span></div><p>${escapeHtml(suggestion.detail)}${suggestion.kind === 'food' && preferences.food ? ` · Preference: ${escapeHtml(preferences.food)}` : ''}</p><div class="inbox-event-meta"><span>◷ ${suggestion.allDay ? 'All day · ' : ''}${prettyDate(suggestion.date)}${suggestion.allDay ? '' : `, ${formatTime(suggestion.time)}`}</span><span>${suggestion.kind ? escapeHtml(suggestion.kind) : `${suggestion.duration} min`}</span><span>From ${escapeHtml(suggestion.sender)}</span></div></div><div class="inbox-actions"><button class="dismiss-button" data-dismiss="${suggestion.id}">Dismiss</button><button class="approve-button" data-approve="${suggestion.id}">Add to calendar</button></div></article>`).join('') : '<div class="card reminder-empty">No matching suggestions. Adjust your personal filters to see more.</div>';
   }
   function renderCalendar() {
+    const calendar = $('#calendar-view');
+    if ($('#calendar-tools').parentElement !== calendar) calendar.insertBefore($('#calendar-tools'), $('#week-calendar'));
     const days = Array.from({ length: 7 }, (_, index) => { const d = new Date(currentWeek); d.setDate(d.getDate() + index); return d; });
     const first = days[0]; const last = days[6];
     $('#week-label').textContent = first.getMonth() === last.getMonth() ? first.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : `${first.toLocaleDateString('en-US', { month: 'short' })} – ${last.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })}`;
-    const startHour = 7; const endHour = 22; const hourHeight = 60;
+    const startHour = 0; const endHour = 24; const hourHeight = 60;
     const hours = Array.from({ length: endHour - startHour }, (_, index) => index + startHour);
     const headers = `<div class="time-column"><div class="time-head"></div><div class="all-day-row">All day</div>${hours.map(hour => `<div class="time-label">${hour % 12 || 12} ${hour < 12 ? 'AM' : 'PM'}</div>`).join('')}</div>`;
+    const query = calendarSearch.trim().toLowerCase();
+    const matchesQuery = item => !query || `${item.title} ${item.source || ''} ${item.notes || ''} ${item.detail || ''} ${item.sender || ''}`.toLowerCase().includes(query);
+    const visibleEvents = events.filter(item => matchesQuery(item) && (showSpecialEvents || !item.special));
+    const visibleDrafts = suggestions.filter(item => isSuggestionVisible(item) && matchesQuery(item));
     const columns = days.map(day => {
       const dayId = localDate(day); const isToday = dayId === localDate(new Date());
-      const dayEvents = events.filter(item => item.date === dayId);
-      const dayDrafts = suggestions.filter(item => item.date === dayId && isSuggestionVisible(item)).map(item => ({ ...item, isDraft: true }));
-      const allDay = [...dayEvents, ...dayDrafts].filter(item => item.allDay).map(item => `<div class="all-day-pill ${item.isDraft ? 'calendar-draft' : ''}" ${item.isDraft ? `data-review-suggestion="${item.id}"` : ''}>${escapeHtml(item.title)}</div>`).join('');
-      const timedEvents = [...dayEvents.filter(item => !item.allDay), ...dayDrafts.filter(item => !item.allDay)].sort((a, b) => a.time.localeCompare(b.time));
+      const dayStart = new Date(`${dayId}T00:00:00`);
+      const dayEnd = new Date(dayStart); dayEnd.setDate(dayEnd.getDate() + 1);
+      const allItems = [
+        ...visibleEvents.map(item => ({ ...item, isDraft: false })),
+        ...visibleDrafts.map(item => ({ ...item, isDraft: true }))
+      ];
+      const dayItems = allItems.filter(item => {
+        if (item.allDay) return item.date === dayId;
+        const starts = new Date(`${item.date}T${item.time || '00:00'}:00`);
+        const ends = new Date(starts.getTime() + Math.max(1, Number(item.duration) || 60) * 60000);
+        return starts < dayEnd && ends > dayStart;
+      });
+      const allDay = dayItems.filter(item => item.allDay).map(item => `<div class="all-day-pill ${item.isDraft ? 'calendar-draft' : ''} ${item.special ? 'special-event' : ''}" ${item.isDraft ? `data-review-suggestion="${item.id}"` : ''}>${escapeHtml(item.title)}</div>`).join('');
+      const timedEvents = dayItems.filter(item => !item.allDay).map(item => {
+        const starts = new Date(`${item.date}T${item.time || '00:00'}:00`);
+        const ends = new Date(starts.getTime() + Math.max(1, Number(item.duration) || 60) * 60000);
+        const visibleStart = new Date(dayStart); visibleStart.setHours(startHour, 0, 0, 0);
+        const visibleEnd = new Date(dayStart); visibleEnd.setHours(endHour, 0, 0, 0);
+        return { ...item, starts, ends, segmentStart: Math.max(starts.getTime(), visibleStart.getTime()), segmentEnd: Math.min(ends.getTime(), visibleEnd.getTime()) };
+      }).filter(item => item.segmentEnd > item.segmentStart).sort((a, b) => a.segmentStart - b.segmentStart);
       const lanes = [];
       const cards = timedEvents.map(item => {
-        const [hour, minute] = item.time.split(':').map(Number);
-        const start = hour * 60 + minute;
-        let lane = lanes.findIndex(end => end <= start);
+        let lane = lanes.findIndex(end => end <= item.segmentStart);
         if (lane < 0) lane = lanes.length;
-        lanes[lane] = start + Number(item.duration || 60);
+        lanes[lane] = item.segmentEnd;
         const laneCount = Math.max(1, lanes.length);
         const kind = item.kind || (item.title.toLowerCase().includes('class') ? 'class' : (item.color === 'peach' ? 'appointment' : (item.color === 'blue' ? 'focus' : 'event')));
-        const top = Math.max(0, (start - startHour * 60) * hourHeight / 60);
-        const height = Math.max(23, Number(item.duration || 60) * hourHeight / 60 - 3);
+        const top = (item.segmentStart - dayStart.getTime()) / 60000 * hourHeight / 60;
+        const height = Math.max(23, (item.segmentEnd - item.segmentStart) / 60000 * hourHeight / 60 - 3);
         const left = 3 + lane * (94 / laneCount); const width = 94 / laneCount;
         const favorite = (preferences.favorites || []).some(name => `${item.title} ${item.sender || ''}`.toLowerCase().includes(name.toLowerCase()));
-        return `<div class="calendar-event kind-${kind} ${item.isDraft ? 'calendar-draft' : ''} ${favorite ? 'favorite-event' : ''}" style="top:${top}px;height:${height}px;left:${left}%;width:${width}%" ${item.isDraft ? `data-review-suggestion="${item.id}"` : ''}><strong>${escapeHtml(item.title)}</strong><span>${item.isDraft ? 'Draft · ' : ''}${formatTime(item.time)}${item.source ? ` · ${escapeHtml(item.source)}` : ''}</span></div>`;
+        const continued = item.starts.getTime() < dayStart.getTime();
+        const segmentDate = new Date(item.segmentStart);
+        const segmentClock = `${String(segmentDate.getHours()).padStart(2, '0')}:${String(segmentDate.getMinutes()).padStart(2, '0')}`;
+        const controls = item.isDraft ? '' : `<span class="calendar-event-controls"><button type="button" data-toggle-special="${item.id}" aria-label="${item.special ? 'Remove special marking' : 'Mark as special'}">${item.special ? '★' : '☆'}</button><button type="button" data-delete-event="${item.id}" aria-label="Remove ${escapeHtml(item.title)}">×</button></span>`;
+        return `<div class="calendar-event kind-${kind} ${item.isDraft ? 'calendar-draft' : ''} ${item.special ? 'special-event' : ''} ${favorite ? 'favorite-event' : ''}" style="top:${top}px;height:${height}px;left:${left}%;width:${width}%" ${item.isDraft ? `data-review-suggestion="${item.id}"` : ''}><strong>${escapeHtml(item.title)}</strong><span>${item.isDraft ? 'Draft · ' : ''}${continued ? 'Continues · ' : ''}${formatTime(continued ? segmentClock : item.time)}${item.source ? ` · ${escapeHtml(item.source)}` : ''}</span>${controls}</div>`;
       }).join('');
       return `<div class="day-column"><div class="day-head ${isToday ? 'is-today' : ''}">${day.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase()}<strong>${day.getDate()}</strong></div><div class="all-day-row">${allDay}</div><div class="day-body" style="height:${hours.length * hourHeight}px">${cards}</div></div>`;
     }).join('');
@@ -114,10 +141,8 @@
   }
   function renderConnections() {
     for (const provider of ['google', 'microsoft']) {
-      const connected = Boolean(connections[provider]);
-      const label = provider === 'google' ? 'Gmail' : 'Outlook';
-      $(`#${provider === 'google' ? 'gmail' : 'outlook'}-status`).textContent = connected ? 'Demo connected' : 'Not connected';
-      $$(`[data-connect="${provider}"]`).forEach(button => { button.textContent = connected ? 'Disconnect' : (button.classList.contains('provider-connect') ? 'Connect account' : 'Connect'); button.classList.toggle('is-connected', connected); });
+      $(`#${provider === 'google' ? 'gmail' : 'outlook'}-status`).textContent = 'OAuth setup required';
+      $$(`[data-connect="${provider}"]`).forEach(button => { button.textContent = button.classList.contains('provider-connect') ? 'Setup needed' : 'Connect'; button.classList.remove('is-connected'); });
     }
   }
   function renderAll() { renderAgenda(); renderSuggestions(); renderCalendar(); renderReminders(); renderConnections(); }
@@ -134,7 +159,13 @@
     if (valid === 'calendar') renderCalendar();
   }
   function openEventDialog({ title = '', date = localDate(new Date()), time = '10:00', notes = '' } = {}) {
-    $('#event-form').reset(); $('#event-title').value = title; $('#event-date').value = date; $('#event-time').value = time; $('#event-notes').value = notes; $('#event-duration').value = '60'; $('#event-dialog').showModal(); $('#event-title').focus();
+    $('#event-form').reset(); $('#event-title').value = title; $('#event-date').value = date; $('#event-time').value = time; $('#event-notes').value = notes; $('#event-duration').value = '60'; syncCustomDuration(); $('#event-dialog').showModal(); $('#event-title').focus();
+  }
+  function syncCustomDuration() {
+    const custom = $('#event-duration').value === 'custom';
+    $('#custom-duration-field').hidden = !custom;
+    $('#custom-duration-hours').required = custom;
+    if (!custom) $('#custom-duration-hours').value = '';
   }
   function createEvent(title, date, time, duration = 60, source = 'Personal', color = 'green', notes = '', kind = 'event', allDay = false) {
     events.push({ id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()), title, date, time, duration: Number(duration), source, color, notes, kind, allDay });
@@ -163,13 +194,150 @@
     createEvent(suggestion.title, suggestion.date, suggestion.time, suggestion.duration, suggestion.source, 'green', suggestion.detail, suggestion.kind || 'event', Boolean(suggestion.allDay));
     suggestions = suggestions.filter(item => item.id !== id); store.write('suggestions', suggestions); renderSuggestions(); toast(`“${suggestion.title}” added to your calendar.`);
   }
+  let pdfLibraryPromise;
+  let docxLibraryPromise;
+  function loadScriptOnce(source, globalName, cachedPromise) {
+    if (window[globalName]) return Promise.resolve(window[globalName]);
+    if (cachedPromise) return cachedPromise;
+    const promise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.src = source; script.async = true;
+      script.onload = () => window[globalName] ? resolve(window[globalName]) : reject(new Error('The document reader did not initialize.'));
+      script.onerror = () => reject(new Error('Could not load the document reader. Check your internet connection and try again.'));
+      document.head.append(script);
+    });
+    return promise;
+  }
+  async function readSyllabusFile(file) {
+    const extension = file.name.split('.').pop().toLowerCase();
+    if (['txt', 'md', 'csv'].includes(extension)) return file.text();
+    if (extension === 'pdf') {
+      pdfLibraryPromise ||= loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'pdfjsLib', pdfLibraryPromise);
+      const pdfjs = await pdfLibraryPromise;
+      pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      const pdf = await pdfjs.getDocument({ data: await file.arrayBuffer() }).promise;
+      const pages = [];
+      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+        const page = await pdf.getPage(pageNumber);
+        const items = (await page.getTextContent()).items;
+        const rows = [];
+        for (const item of items) {
+          if (!item.str?.trim()) continue;
+          const y = Math.round(item.transform?.[5] || 0);
+          let row = rows.find(entry => Math.abs(entry.y - y) <= 2);
+          if (!row) { row = { y, text: [] }; rows.push(row); }
+          row.text.push(item.str.trim());
+        }
+        pages.push(rows.sort((a, b) => b.y - a.y).map(row => row.text.join(' ')).join('\n'));
+      }
+      return pages.join('\n');
+    }
+    if (extension === 'docx') {
+      docxLibraryPromise ||= loadScriptOnce('https://unpkg.com/mammoth@1.8.0/mammoth.browser.min.js', 'mammoth', docxLibraryPromise);
+      const mammoth = await docxLibraryPromise;
+      return (await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() })).value;
+    }
+    throw new Error('Use a .txt, .md, .csv, searchable .pdf, or .docx syllabus.');
+  }
+  function syllabusDate(line) {
+    let match = line.match(/\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b/);
+    if (match) {
+      const parsed = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+      if (parsed.getFullYear() === Number(match[1]) && parsed.getMonth() === Number(match[2]) - 1 && parsed.getDate() === Number(match[3])) return { value: localDate(parsed), token: match[0] };
+      return null;
+    }
+    match = line.match(/\b(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\b/);
+    if (match) {
+      const year = match[3] ? Number(match[3].length === 2 ? `20${match[3]}` : match[3]) : new Date().getFullYear();
+      const parsed = new Date(year, Number(match[1]) - 1, Number(match[2]));
+      if (parsed.getFullYear() === year && parsed.getMonth() === Number(match[1]) - 1 && parsed.getDate() === Number(match[2])) return { value: localDate(parsed), token: match[0] };
+      return null;
+    }
+    const months = 'january february march april may june july august september october november december'.split(' ');
+    const monthPattern = '(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)';
+    match = line.match(new RegExp(`\\b${monthPattern}\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(20\\d{2}))?\\b`, 'i'));
+    if (!match) match = line.match(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+${monthPattern}\\.?[,]?\\s*(20\\d{2})?\\b`, 'i'));
+    if (match) {
+      const monthWord = /^\d/.test(match[1]) ? match[2] : match[1];
+      const day = Number(/^\d/.test(match[1]) ? match[1] : match[2]);
+      const year = Number((/^\d/.test(match[1]) ? match[3] : match[3]) || new Date().getFullYear());
+      const month = months.findIndex(name => name.startsWith(monthWord.toLowerCase().slice(0, 3))) + 1;
+      const validDate = new Date(year, month - 1, day);
+      if (month && validDate.getMonth() === month - 1 && validDate.getDate() === day) return { value: localDate(validDate), token: match[0] };
+    }
+    return null;
+  }
+  function syllabusTime(line) {
+    let match = line.match(/\b(\d{1,2})(?::([0-5]\d))?\s*(a\.?m\.?|p\.?m\.?)\b/i);
+    if (match) {
+      let hour = Number(match[1]) % 12;
+      if (match[3].toLowerCase().startsWith('p')) hour += 12;
+      return { value: `${String(hour).padStart(2, '0')}:${match[2] || '00'}`, token: match[0] };
+    }
+    match = line.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+    return match ? { value: `${String(match[1]).padStart(2, '0')}:${match[2]}`, token: match[0] } : { value: '09:00', token: '' };
+  }
+  function parseSyllabus(text) {
+    const candidates = [];
+    const eventWords = /\b(exam|midterm|final|quiz|test|homework|assignment|problem set|project|due|submit|office hours?|lecture|class|meeting|appointment|lab|review|presentation|registration)\b/i;
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.replace(/\s+/g, ' ').trim();
+      if (!line || !eventWords.test(line)) continue;
+      const date = syllabusDate(line);
+      if (!date) continue;
+      const time = syllabusTime(line);
+      const title = line.replace(date.token, ' ').replace(time.token, ' ').replace(/\b(?:on|at|due|by)\b/gi, ' ').replace(/[|•–—]+/g, ' ').replace(/\s+/g, ' ').replace(/^[\s:;,.-]+|[\s:;,.-]+$/g, '').slice(0, 140);
+      const officeHours = /office hours?|drop[- ]?in|tutoring/i.test(line);
+      const kind = /exam|midterm|final|quiz|test/i.test(line) ? 'deadline' : /homework|assignment|problem set|due|submit/i.test(line) ? 'deadline' : officeHours ? 'focus' : 'class';
+      candidates.push({ title: title || line.slice(0, 140), date: date.value, time: time.value, duration: 60, kind, special: officeHours, selected: true, sourceLine: line });
+    }
+    return candidates;
+  }
+  function renderSyllabusCandidates() {
+    $('#syllabus-candidates').innerHTML = syllabusCandidates.map((item, index) => `<article class="syllabus-candidate" data-candidate="${index}"><label class="candidate-select"><input type="checkbox" data-candidate-selected="${index}" ${item.selected ? 'checked' : ''}> Include</label><label>Event name<input class="form-input" data-candidate-title="${index}" value="${escapeHtml(item.title)}"></label><div class="form-two"><label>Date<input class="form-input" type="date" data-candidate-date="${index}" value="${item.date}"></label><label>Time<input class="form-input" type="time" data-candidate-time="${index}" value="${item.time}"></label></div><label class="special-toggle"><input type="checkbox" data-candidate-special="${index}" ${item.special ? 'checked' : ''}> Mark special (can be hidden)</label><small>${escapeHtml(item.sourceLine)}</small></article>`).join('');
+    $('#add-syllabus-events').disabled = !syllabusCandidates.some(item => item.selected);
+  }
+  async function scanSyllabus(file) {
+    syllabusFileName = file.name;
+    $('#syllabus-dialog').showModal();
+    $('#syllabus-status').textContent = `Reading ${file.name} locally…`;
+    $('#syllabus-candidates').replaceChildren();
+    $('#add-syllabus-events').disabled = true;
+    try {
+      const text = await readSyllabusFile(file);
+      syllabusCandidates = parseSyllabus(text);
+      $('#syllabus-status').textContent = syllabusCandidates.length ? `Found ${syllabusCandidates.length} possible dated item(s) in ${file.name}. Review and edit before adding; scanned documents are not uploaded.` : 'No dated exam, assignment, class, or office-hour items were recognized. For scanned-image PDFs, paste or type the schedule as text instead.';
+      renderSyllabusCandidates();
+    } catch (error) {
+      $('#syllabus-status').textContent = error.message || 'Could not read this file.';
+    }
+  }
+  function closeSyllabusDialog() { $('#syllabus-dialog').close(); $('#syllabus-file').value = ''; }
   function bindEvents() {
     document.addEventListener('click', event => {
       const nav = event.target.closest('[data-view]'); if (nav) { event.preventDefault(); navigate(nav.dataset.view); return; }
       const viewLink = event.target.closest('[data-view-link]'); if (viewLink) { navigate(viewLink.dataset.viewLink); return; }
       if (event.target.closest('[data-open-settings]')) { $('#settings-dialog').showModal(); return; }
       if (event.target.closest('[data-open-preferences]')) { applyPreferences(); $('#preferences-dialog').showModal(); return; }
-      const connect = event.target.closest('[data-connect]'); if (connect) { const provider = connect.dataset.connect; connections[provider] = !connections[provider]; store.write('connections', connections); renderConnections(); toast(connections[provider] ? 'Demo connection enabled. OAuth setup is needed for real account access.' : 'Demo connection disconnected.'); return; }
+      if (event.target.closest('[data-open-text-import]')) { $('#text-import-form').reset(); $('#text-appointment-date').value = localDate(new Date()); $('#text-appointment-time').value = '10:00'; $('#text-import-dialog').showModal(); $('#text-message-input').focus(); return; }
+      if (event.target.closest('[data-delete-event]')) {
+        const id = event.target.closest('[data-delete-event]').dataset.deleteEvent;
+        events = events.filter(item => String(item.id) !== id); store.write('events', events); renderAgenda(); renderCalendar(); toast('Event removed.'); return;
+      }
+      if (event.target.closest('[data-toggle-special]')) {
+        const id = event.target.closest('[data-toggle-special]').dataset.toggleSpecial;
+        const item = events.find(entry => String(entry.id) === id);
+        if (item) item.special = !item.special;
+        store.write('events', events); renderCalendar(); return;
+      }
+      if (event.target.closest('#close-syllabus-dialog, #cancel-syllabus-import')) { closeSyllabusDialog(); return; }
+      if (event.target.closest('#add-syllabus-events')) {
+        const selected = syllabusCandidates.filter(item => item.selected && item.title && item.date);
+        for (const item of selected) events.push({ id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`, title: item.title, date: item.date, time: item.time || '09:00', duration: Number(item.duration) || 60, source: `Syllabus · ${syllabusFileName}`, color: item.special ? 'blue' : 'green', notes: item.sourceLine, kind: item.kind || 'class', special: Boolean(item.special) });
+        store.write('events', events); renderAgenda(); renderCalendar();
+        closeSyllabusDialog(); toast(`${selected.length} syllabus event(s) added to the calendar.`); return;
+      }
+      const connect = event.target.closest('[data-connect]'); if (connect) { toast(connect.dataset.connect === 'google' ? 'Google sign-in is not configured. OAuth setup is required; no account data was accessed.' : 'Microsoft sign-in is not configured. OAuth setup is required; no account data was accessed.'); return; }
       const approve = event.target.closest('[data-approve]'); if (approve) { approveSuggestion(approve.dataset.approve); return; }
       const review = event.target.closest('[data-review-suggestion]'); if (review) { navigate('inbox'); return; }
       const dismiss = event.target.closest('[data-dismiss]'); if (dismiss) { suggestions = suggestions.filter(item => item.id !== dismiss.dataset.dismiss); store.write('suggestions', suggestions); renderSuggestions(); toast('Suggestion dismissed.'); return; }
@@ -179,13 +347,54 @@
     });
     $('#planner-submit').addEventListener('click', handlePlanner);
     $('#planner-input').addEventListener('keydown', event => { if (event.key === 'Enter') handlePlanner(); });
+    $('#calendar-search').addEventListener('input', event => { calendarSearch = event.currentTarget.value; renderCalendar(); });
+    $('#show-special-events').addEventListener('change', event => { showSpecialEvents = event.currentTarget.checked; renderCalendar(); });
+    $('#syllabus-file').addEventListener('change', event => { const [file] = event.currentTarget.files; if (file) scanSyllabus(file); });
+    $('#syllabus-candidates').addEventListener('input', event => {
+      const input = event.target;
+      const index = Number(input.dataset.candidateTitle ?? input.dataset.candidateDate ?? input.dataset.candidateTime);
+      if (!Number.isInteger(index) || !syllabusCandidates[index]) return;
+      if (input.matches('[data-candidate-title]')) syllabusCandidates[index].title = input.value;
+      else if (input.matches('[data-candidate-date]')) syllabusCandidates[index].date = input.value;
+      else if (input.matches('[data-candidate-time]')) syllabusCandidates[index].time = input.value;
+    });
+    $('#syllabus-candidates').addEventListener('change', event => {
+      const input = event.target;
+      const index = Number(input.dataset.candidateSelected ?? input.dataset.candidateSpecial);
+      if (!Number.isInteger(index) || !syllabusCandidates[index]) return;
+      if (input.matches('[data-candidate-selected]')) syllabusCandidates[index].selected = input.checked;
+      if (input.matches('[data-candidate-special]')) syllabusCandidates[index].special = input.checked;
+      renderSyllabusCandidates();
+    });
     $('#new-event-button').addEventListener('click', () => openEventDialog());
     $('#calendar-new-event').addEventListener('click', () => openEventDialog());
+    $('#event-duration').addEventListener('change', syncCustomDuration);
     $('#event-form').addEventListener('submit', event => {
       event.preventDefault();
       if (event.submitter?.value === 'cancel') { $('#event-dialog').close(); return; }
-      const form = new FormData(event.currentTarget); createEvent(form.get('title').trim(), form.get('date'), form.get('time'), form.get('duration'), 'Personal', 'green', form.get('notes').trim(), form.get('kind') || 'event');
+      const form = new FormData(event.currentTarget);
+      const duration = form.get('duration') === 'custom' ? Number(form.get('customDurationHours')) * 60 : Number(form.get('duration'));
+      createEvent(form.get('title').trim(), form.get('date'), form.get('time'), duration, 'Personal', 'green', form.get('notes').trim(), form.get('kind') || 'event');
       $('#event-dialog').close(); toast('Your event is on the calendar.');
+    });
+    $('#text-import-form').addEventListener('submit', event => {
+      event.preventDefault();
+      suggestions.unshift({
+        id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+        title: $('#text-appointment-title').value.trim(),
+        source: 'Phone text',
+        sender: $('#text-sender-input').value.trim() || 'Imported message',
+        detail: $('#text-message-input').value.trim(),
+        date: $('#text-appointment-date').value,
+        time: $('#text-appointment-time').value,
+        duration: 60,
+        provider: 'messages'
+      });
+      store.write('suggestions', suggestions);
+      renderSuggestions();
+      renderCalendar();
+      $('#text-import-dialog').close();
+      toast('Text saved as a draft. Review it in Suggestions before adding it.');
     });
     $('#previous-week').addEventListener('click', () => { currentWeek.setDate(currentWeek.getDate() - 7); renderCalendar(); });
     $('#next-week').addEventListener('click', () => { currentWeek.setDate(currentWeek.getDate() + 7); renderCalendar(); });
@@ -220,6 +429,8 @@
       if (event.target === event.currentTarget) event.currentTarget.close();
     });
     $('#settings-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
+    $('#text-import-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
+    $('#syllabus-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) closeSyllabusDialog(); });
     $('#reminder-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) event.currentTarget.close(); });
   }
   function applyPreferences() {
